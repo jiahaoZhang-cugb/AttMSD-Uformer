@@ -29,7 +29,7 @@ class SimpleTransformerBlock(nn.Module):
         return x
 
 class PySegFormerBackbone(nn.Module):
-    def __init__(self, dims=[64, 128, 320, 512], depths=[2, 2, 2, 2]):
+    def __init__(self, dims=[**, **, **, **], depths=[2, 2, 2, 2]):
         super().__init__()
         self.stages = nn.ModuleList()
         in_ch = 3
@@ -51,7 +51,7 @@ class PySegFormerBackbone(nn.Module):
         return feats
 
 class UNetEncoder(nn.Module):
-    def __init__(self, channels=[64, 128, 320, 512]):
+    def __init__(self, channels=[**, **, **, **]):
         super().__init__()
         self.blocks = nn.ModuleList()
         in_ch = 3
@@ -102,7 +102,7 @@ class DualEncoderUNetAttMSD(nn.Module):
         super().__init__()
         self.enc_segformer = PySegFormerBackbone()
         self.enc_unet = UNetEncoder()
-        C1, C2, C3, C4 = [64, 128, 320, 512]
+        C1, C2, C3, C4 = [**, **, **, **]
         self.fuse = nn.ModuleList([nn.Conv2d(C1*2, C1, 1), nn.Conv2d(C2*2, C2, 1),
                                    nn.Conv2d(C3*2, C3, 1), nn.Conv2d(C4*2, C4, 1)])
         self.up4 = nn.ConvTranspose2d(C4, C3, 2, 2)
@@ -140,7 +140,7 @@ scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0
 train_loader = get_loaders(train_img_dir, train_mask_dir, img_size)
 val_loader = get_loaders(val_img_dir, val_mask_dir, img_size)
 best_val_loss = float('inf')
-num_epochs = 70
+num_epochs = 100
 
 for epoch in range(1, num_epochs + 1):
     model.train()
