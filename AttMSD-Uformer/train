@@ -1,0 +1,182 @@
+def get_loaders(img_dir, mask_dir, size, batch_size=2):
+    transform = A.Compose([
+        A.Resize(*size), A.HorizontalFlip(p=0.5),
+        A.RandomBrightnessContrast(p=0.2), A.Normalize(), ToTensorV2()
+    ])
+    class SegDataset(Dataset):
+        def __init__(self, img_dir, mask_dir, tf):
+            self.imgs = sorted(glob.glob(os.path.join(img_dir, '*.png')))
+            self.masks = sorted(glob.glob(os.path.join(mask_dir, '*.png')))
+            self.tf = tf
+        def __len__(self): return len(self.imgs)
+        def __getitem__(self, i):
+            img = cv2.cvtColor(cv2.imread(self.imgs[i]), cv2.COLOR_BGR2RGB)
+            mask = cv2.imread(self.masks[i], cv2.IMREAD_GRAYSCALE)
+            aug = self.tf(image=img, mask=mask)
+            return aug['image'], (aug['mask'] > 0).float().unsqueeze(0)
+    return DataLoader(SegDataset(img_dir, mask_dir, transform), batch_size=batch_size, shuffle=True)
+
+class SimpleTransformerBlock(nn.Module):
+    def __init__(self, dim, heads):
+        super().__init__()
+        self.norm1 = nn.LayerNorm(dim)
+        self.attn = nn.MultiheadAttention(embed_dim=dim, num_heads=heads, batch_first=True)
+        self.norm2 = nn.LayerNorm(dim)
+        self.ff = nn.Sequential(nn.Linear(dim, dim * 4), nn.GELU(), nn.Linear(dim * 4, dim))
+    def forward(self, x):
+        x = x + self.attn(self.norm1(x), self.norm1(x), self.norm1(x))[0]
+        x = x + self.ff(self.norm2(x))
+        return x
+
+class PySegFormerBackbone(nn.Module):
+    def __init__(self, dims=[64, 128, 320, 512], depths=[2, 2, 2, 2]):
+        super().__init__()
+        self.stages = nn.ModuleList()
+        in_ch = 3
+        for dim in dims:
+            self.stages.append(nn.Sequential(
+                nn.Conv2d(in_ch, dim, 3, 2, 1), nn.BatchNorm2d(dim), nn.ReLU()))
+            in_ch = dim
+        self.transformers = nn.ModuleList([
+            nn.Sequential(*[SimpleTransformerBlock(dim, heads=dim // 64) for _ in range(d)])
+            for dim, d in zip(dims, depths)])
+    def forward(self, x):
+        feats = []
+        for stage, trans in zip(self.stages, self.transformers):
+            x = stage(x)
+            B, C, H, W = x.shape
+            xf = x.flatten(2).transpose(1, 2)
+            xf = trans(xf).transpose(1, 2).reshape(B, C, H, W)
+            feats.append(xf)
+        return feats
+
+class UNetEncoder(nn.Module):
+    def __init__(self, channels=[64, 128, 320, 512]):
+        super().__init__()
+        self.blocks = nn.ModuleList()
+        in_ch = 3
+        for ch in channels:
+            self.blocks.append(nn.Sequential(
+                nn.Conv2d(in_ch, ch, 3, 2, 1), nn.BatchNorm2d(ch), nn.ReLU(),
+                nn.Conv2d(ch, ch, 3, 1, 1), nn.BatchNorm2d(ch), nn.ReLU()))
+            in_ch = ch
+    def forward(self, x):
+        feats = []
+        for block in self.blocks:
+            x = block(x)
+            feats.append(x)
+        return feats
+
+def CBR(ic, oc):
+    return nn.Sequential(nn.Conv2d(ic, oc, 3, padding=1), nn.BatchNorm2d(oc), nn.ReLU())
+
+class AttentionWeightedMSD(nn.Module):
+    def __init__(self, channels):
+        super().__init__()
+        self.proj = nn.ModuleList([nn.Conv2d(ch, 64, 1) for ch in channels])
+        self.fuse = nn.Sequential(
+            nn.Conv2d(64, 64, 3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True)
+        )
+        self.num_feats = len(channels)
+        self.attn_fc = nn.Linear(64 * self.num_feats, self.num_feats)
+
+    def forward(self, feats):
+        B = feats[0].shape[0]
+        projected_feats = [proj(f) for proj, f in zip(self.proj, feats)]
+
+        # Global average pooling + flatten
+        pooled = [F.adaptive_avg_pool2d(f, 1).view(B, -1) for f in projected_feats]  # list of [B, 64]
+        cat = torch.cat(pooled, dim=1)  # [B, 64*N]
+
+        # Attention weights
+        attn_weights = F.softmax(self.attn_fc(cat), dim=1)  # [B, N]
+
+        # Apply attention
+        fused = sum(attn_weights[:, i].view(B, 1, 1, 1) * projected_feats[i] for i in range(self.num_feats))
+        return self.fuse(fused)
+
+class DualEncoderUNetAttMSD(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.enc_segformer = PySegFormerBackbone()
+        self.enc_unet = UNetEncoder()
+        C1, C2, C3, C4 = [64, 128, 320, 512]
+        self.fuse = nn.ModuleList([nn.Conv2d(C1*2, C1, 1), nn.Conv2d(C2*2, C2, 1),
+                                   nn.Conv2d(C3*2, C3, 1), nn.Conv2d(C4*2, C4, 1)])
+        self.up4 = nn.ConvTranspose2d(C4, C3, 2, 2)
+        self.dec4 = nn.Sequential(CBR(C3+C3, C3), CBR(C3, C3))
+        self.up3 = nn.ConvTranspose2d(C3, C2, 2, 2)
+        self.dec3 = nn.Sequential(CBR(C2+C2, C2), CBR(C2, C2))
+        self.up2 = nn.ConvTranspose2d(C2, C1, 2, 2)
+        self.dec2 = nn.Sequential(CBR(C1+C1, C1), CBR(C1, C1))
+        self.up1 = nn.ConvTranspose2d(C1, 64, 2, 2)
+        self.dec1 = nn.Sequential(CBR(64+3, 64), CBR(64, 64))
+        self.ms_decoder = AttentionWeightedMSD([C3, C2, C1, 64])
+        self.final = nn.Conv2d(64, 1, 1)
+    def forward(self, x):
+        f1, f2, f3, f4 = self.enc_segformer(x)
+        u1, u2, u3, u4 = self.enc_unet(x)
+        f1 = self.fuse[0](torch.cat([f1, u1], dim=1))
+        f2 = self.fuse[1](torch.cat([f2, u2], dim=1))
+        f3 = self.fuse[2](torch.cat([f3, u3], dim=1))
+        f4 = self.fuse[3](torch.cat([f4, u4], dim=1))
+        d4 = self.dec4(torch.cat([self.up4(f4), f3], dim=1))
+        d3 = self.dec3(torch.cat([self.up3(d4), f2], dim=1))
+        d2 = self.dec2(torch.cat([self.up2(d3), f1], dim=1))
+        up1 = self.up1(d2)
+        x_resized = F.interpolate(x, size=up1.shape[2:], mode='bilinear', align_corners=False)
+        d1 = self.dec1(torch.cat([up1, x_resized], dim=1))
+        up4 = F.interpolate(d4, size=x.shape[2:], mode='bilinear', align_corners=False)
+        up3 = F.interpolate(d3, size=x.shape[2:], mode='bilinear', align_corners=False)
+        up2 = F.interpolate(d2, size=x.shape[2:], mode='bilinear', align_corners=False)
+        return self.final(self.ms_decoder([up4, up3, up2, d1]))
+
+model = DualEncoderUNetAttMSD().to(device)
+criterion = nn.BCEWithLogitsLoss()
+optimizer = optim.Adam(model.parameters(), lr=1e-4)
+scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
+train_loader = get_loaders(train_img_dir, train_mask_dir, img_size)
+val_loader = get_loaders(val_img_dir, val_mask_dir, img_size)
+best_val_loss = float('inf')
+num_epochs = 70
+
+for epoch in range(1, num_epochs + 1):
+    model.train()
+    total_loss = 0
+    for imgs, masks in tqdm(train_loader, desc=f"[Train] Epoch {epoch}/{num_epochs}"):
+        imgs, masks = imgs.to(device), masks.to(device)
+        optimizer.zero_grad()
+        outputs = model(imgs)
+        loss = criterion(outputs, masks)
+        loss.backward()
+        optimizer.step()
+        total_loss += loss.item()
+
+    model.eval()
+    val_loss = 0
+    with torch.no_grad():
+        for imgs, masks in val_loader:
+            imgs, masks = imgs.to(device), masks.to(device)
+            outputs = model(imgs)
+            val_loss += criterion(outputs, masks).item()
+
+    avg_train_loss = total_loss / len(train_loader)
+    avg_val_loss = val_loss / len(val_loader)
+    scheduler.step(avg_val_loss)
+    print(f"Epoch {epoch}: Train Loss = {avg_train_loss:.4f}, Val Loss = {avg_val_loss:.4f}")
+
+    if avg_val_loss < best_val_loss:
+        best_val_loss = avg_val_loss
+        torch.save(model.state_dict(), model_save_path)
+        print(" Best model saved!")
+
+    gc.collect()
+    torch.cuda.empty_cache()
+
+
+
+
+
+
