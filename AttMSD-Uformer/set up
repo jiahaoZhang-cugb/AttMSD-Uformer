@@ -1,0 +1,8 @@
+drive_base = ''
+train_img_dir = os.path.join(drive_base, '')
+train_mask_dir = os.path.join(drive_base, '')
+val_img_dir = os.path.join(drive_base, '')
+val_mask_dir = os.path.join(drive_base, '')
+model_save_path = os.path.join(drive_base, '')
+img_size = (256, 192)
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
