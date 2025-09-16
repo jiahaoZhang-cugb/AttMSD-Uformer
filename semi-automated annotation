@@ -78,4 +78,4 @@ for cnt in contours:
 with open(save_path, "w") as f:
     json.dump(json_dict, f, indent=2)
 
-print(f"自动标注完成（已简化轮廓），保存路径: {save_path}")
+print(f"done， {save_path}")
