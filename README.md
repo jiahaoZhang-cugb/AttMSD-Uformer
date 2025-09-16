@@ -1,2 +1,2 @@
 # AttMSD-Uformer
-AttMSD-Uformer in Segmentation and Abundance Estimation of Deep-Sea Polymetallic Nodule Images
+A noval modele use in Segmentation and Abundance Estimation of Deep-Sea Polymetallic Nodule Images
