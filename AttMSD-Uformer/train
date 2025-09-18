@@ -88,10 +88,10 @@ class AttentionWeightedMSD(nn.Module):
 
         
         pooled = [F.adaptive_avg_pool2d(f, 1).view(B, -1) for f in projected_feats]  # list of [B, 64]
-        cat = torch.cat(pooled, dim=1)  # [B, 64*N]
+        cat = torch.cat(pooled, dim=1)  
 
        
-        attn_weights = F.softmax(self.attn_fc(cat), dim=1)  # [B, N]
+        attn_weights = F.softmax(self.attn_fc(cat), dim=1)  
 
         
         fused = sum(attn_weights[:, i].view(B, 1, 1, 1) * projected_feats[i] for i in range(self.num_feats))
