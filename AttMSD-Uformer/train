@@ -1,4 +1,4 @@
-def get_loaders(img_dir, mask_dir, size, batch_size=2):
+def get_loaders(img_dir, mask_dir, size, batch_size=*):
     transform = A.Compose([
         A.Resize(*size), A.HorizontalFlip(p=0.5),
         A.RandomBrightnessContrast(p=0.2), A.Normalize(), ToTensorV2()
@@ -86,14 +86,14 @@ class AttentionWeightedMSD(nn.Module):
         B = feats[0].shape[0]
         projected_feats = [proj(f) for proj, f in zip(self.proj, feats)]
 
-        # Global average pooling + flatten
+        
         pooled = [F.adaptive_avg_pool2d(f, 1).view(B, -1) for f in projected_feats]  # list of [B, 64]
         cat = torch.cat(pooled, dim=1)  # [B, 64*N]
 
-        # Attention weights
+       
         attn_weights = F.softmax(self.attn_fc(cat), dim=1)  # [B, N]
 
-        # Apply attention
+        
         fused = sum(attn_weights[:, i].view(B, 1, 1, 1) * projected_feats[i] for i in range(self.num_feats))
         return self.fuse(fused)
 
