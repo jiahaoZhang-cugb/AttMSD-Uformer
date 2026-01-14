@@ -1,4 +1,4 @@
-drive_base = ''
+drive_base = 'XXX'
 train_img_dir = os.path.join(drive_base, '')
 train_mask_dir = os.path.join(drive_base, '')
 val_img_dir = os.path.join(drive_base, '')
