@@ -1,20 +1,41 @@
-def get_loaders(img_dir, mask_dir, size, batch_size=*):
-    transform = A.Compose([
-        A.Resize(*size), A.HorizontalFlip(p=0.5),
-        A.RandomBrightnessContrast(p=0.2), A.Normalize(), ToTensorV2()
-    ])
+def get_loaders(img_dir, mask_dir, size, batch_size=2, is_train=True):
+    if is_train:
+        transform = A.Compose([
+            A.Resize(*size),
+            A.HorizontalFlip(p=0.5),
+            A.RandomBrightnessContrast(p=0.2),
+            A.Normalize(),
+            ToTensorV2()
+        ])
+        shuffle = True
+    else:
+        transform = A.Compose([
+            A.Resize(*size),
+            A.Normalize(),
+            ToTensorV2()
+        ])
+        shuffle = False
+
     class SegDataset(Dataset):
         def __init__(self, img_dir, mask_dir, tf):
             self.imgs = sorted(glob.glob(os.path.join(img_dir, '*.png')))
             self.masks = sorted(glob.glob(os.path.join(mask_dir, '*.png')))
             self.tf = tf
-        def __len__(self): return len(self.imgs)
+
+        def __len__(self):
+            return len(self.imgs)
+
         def __getitem__(self, i):
             img = cv2.cvtColor(cv2.imread(self.imgs[i]), cv2.COLOR_BGR2RGB)
             mask = cv2.imread(self.masks[i], cv2.IMREAD_GRAYSCALE)
             aug = self.tf(image=img, mask=mask)
             return aug['image'], (aug['mask'] > 0).float().unsqueeze(0)
-    return DataLoader(SegDataset(img_dir, mask_dir, transform), batch_size=batch_size, shuffle=True)
+
+    return DataLoader(
+        SegDataset(img_dir, mask_dir, transform),
+        batch_size=batch_size,
+        shuffle=shuffle
+    )
 
 class SimpleTransformerBlock(nn.Module):
     def __init__(self, dim, heads):
